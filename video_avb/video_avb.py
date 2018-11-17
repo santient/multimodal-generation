@@ -18,9 +18,10 @@ import skimage.io
 
 experiment = Experiment(api_key="E3oWJUSFulpXpCUQfc5oGz0zY", project_name="obama_avb")
 
+gpu = 3
 cudnn.benchmark = True
-device = torch.device("cuda:3")
-torch.cuda.set_device(3)
+device = torch.device("cuda:{}".format(gpu))
+torch.cuda.set_device(gpu)
 
 img_size = 256
 channels = 3
@@ -158,10 +159,7 @@ class ImageAVB(nn.Module):
             nn.Dropout2d(0.25),
             nn.BatchNorm2d(256, 0.8)
         )
-        self.dis_layer = nn.Sequential(
-            nn.Linear(256*self.ds_size**2, 1),
-            nn.Sigmoid()
-        )
+        self.dis_layer = nn.Linear(256*self.ds_size**2, 1)
         
     def sample_prior(self, s):
         if self.training:
@@ -174,25 +172,25 @@ class ImageAVB(nn.Module):
     
     def discriminator(self, x, z):
         z_proj = self.dis_proj(z)
-        z_proj = z_proj.view(z_proj.shape[0], 1, self.img_size, self.img_size)
+        z_proj = z_proj.view(z_proj.data.shape[0], 1, self.img_size, self.img_size)
         i = torch.cat((x, z_proj), dim=1)
         h = self.dis_blocks(i)
-        h = h.view(h.shape[0], 256*self.ds_size**2)
+        h = h.view(h.data.shape[0], 256*self.ds_size**2)
         out = self.dis_layer(h)
         return out
     
     def sample_posterior(self, x):
         prior_proj = self.enc_proj(self.sample_prior(x))
-        prior_proj = prior_proj.view(prior_proj.shape[0], 1, self.img_size, self.img_size)
+        prior_proj = prior_proj.view(prior_proj.data.shape[0], 1, self.img_size, self.img_size)
         i = torch.cat((x, prior_proj), dim=1)
         h = self.enc_blocks(i)
-        h = h.view(h.shape[0], 256*self.ds_size**2)
+        h = h.view(h.data.shape[0], 256*self.ds_size**2)
         out = self.enc_layer(h)
         return out
     
     def decoder(self, z):
         z_proj = self.gen_proj(z)
-        z_proj = z_proj.view(z_proj.shape[0], 256, self.ds_size, self.ds_size)
+        z_proj = z_proj.view(z_proj.data.shape[0], 256, self.ds_size, self.ds_size)
         out = self.gen_blocks(z_proj)
         return out
     
@@ -230,12 +228,7 @@ class SequenceAVB(nn.Module):
         self.enc_lstm = nn.LSTM(self.vector_dim, self.latent_dim, num_layers=2, dropout=0.25)
         
         self.dis_lstm = nn.LSTM(self.vector_dim, self.latent_dim, num_layers=2, dropout=0.25)
-        self.dis_layer = nn.Sequential(
-            nn.Linear(4*self.latent_dim, 1),
-            nn.Sigmoid()
-        )
-        
-        self.sigmoid = nn.Sigmoid()
+        self.dis_layer = nn.Linear(4*self.latent_dim, 1)
         
     def sample_prior(self, s):
         if self.training:
@@ -248,7 +241,7 @@ class SequenceAVB(nn.Module):
     
     def discriminator(self, x, z):
         _, states = self.dis_lstm(x, z)
-        h = torch.cat((states[0].view(states[0].shape[1], 2*self.latent_dim), states[1].view(states[1].shape[1], 2*self.latent_dim)), dim=1)
+        h = torch.cat((states[0].view(states[0].data.shape[1], 2*self.latent_dim), states[1].view(states[1].data.shape[1], 2*self.latent_dim)), dim=1)
         out = self.dis_layer(h)
         return out
     
@@ -257,7 +250,7 @@ class SequenceAVB(nn.Module):
         return (torch.stack([states[0][1], states[0][0]]), torch.stack([states[1][1], states[1][0]]))
     
     def decoder(self, z, num_steps):
-        step = Variable(torch.zeros(1, z[0].shape[1], self.latent_dim)).cuda()
+        step = Variable(torch.zeros(1, z[0].data.shape[1], self.latent_dim)).cuda()
         decoded = []
         for i in range(num_steps):
             step, z = self.gen_lstm(step, z)
@@ -278,8 +271,8 @@ class SequenceAVB(nn.Module):
                 log_d_prior, torch.zeros_like(log_d_prior)))
         
         x_recon = self.decoder(z_q, self.seq_len)
-        recon_likelihood = -torch.nn.functional.binary_cross_entropy(
-                                                self.sigmoid(x_recon), self.sigmoid(x))*x.data.shape[1]
+        recon_likelihood = -torch.nn.functional.binary_cross_entropy_with_logits(
+                                                x_recon.permute(1, 0, 2), x.permute(1, 0, 2))*x.data.shape[1]  # put batch first
         
         gen_loss = torch.mean(log_d_posterior)-torch.mean(recon_likelihood)
         
@@ -333,10 +326,7 @@ class VideoAVB(nn.Module):
         )
         self.dis_rep = nn.Linear(256*self.ds_size**2, self.img_latent_dim)
         self.dis_lstm = nn.LSTM(self.img_latent_dim, self.seq_latent_dim, num_layers=2, dropout=0.25)
-        self.dis_layer = nn.Sequential(
-            nn.Linear(4*self.seq_latent_dim, 1),
-            nn.Sigmoid()
-        )
+        self.dis_layer = nn.Linear(4*self.seq_latent_dim, 1)
         
     def sample_prior(self, s):
         frame_p = []
@@ -348,14 +338,14 @@ class VideoAVB(nn.Module):
         reps = []
         for frame, z in zip(x.split(1), z_img.split(1)):
             z_proj = self.dis_proj(z[0])
-            z_proj = z_proj.view(z_proj.shape[0], 1, self.img_size, self.img_size)
+            z_proj = z_proj.view(z_proj.data.shape[0], 1, self.img_size, self.img_size)
             i = torch.cat((frame[0], z_proj), dim=1)
             h = self.dis_blocks(i)
-            h = h.view(h.shape[0], 256*self.ds_size**2)
+            h = h.view(h.data.shape[0], 256*self.ds_size**2)
             rep = self.dis_rep(h)
             reps.append(rep)
         _, states = self.dis_lstm(torch.stack(reps), z_seq)
-        h = torch.cat((states[0].view(states[0].shape[1], 2*self.seq_latent_dim), states[1].view(states[1].shape[1], 2*self.seq_latent_dim)), dim=1)
+        h = torch.cat((states[0].view(states[0].data.shape[1], 2*self.seq_latent_dim), states[1].view(states[1].data.shape[1], 2*self.seq_latent_dim)), dim=1)
         out = self.dis_layer(h)
         return out
     
@@ -386,8 +376,8 @@ class VideoAVB(nn.Module):
             img_gen_loss.append(gen_loss)
         z_p_img = torch.stack(z_p_img)
         z_q_img = torch.stack(z_q_img)
-        img_dis_loss = sum(img_dis_loss)
-        img_gen_loss = sum(img_gen_loss)
+        img_dis_loss = sum(img_dis_loss) / len(img_dis_loss)
+        img_gen_loss = sum(img_gen_loss) / len(img_gen_loss)
         
         z_p_seq, z_q_seq, seq_dis_loss, seq_gen_loss = self.seq_model.forward(z_q_img.detach())
         
@@ -402,7 +392,7 @@ class VideoAVB(nn.Module):
         
         x_recon = self.decoder(z_q_seq, self.seq_len)
         recon_likelihood = -torch.nn.functional.binary_cross_entropy(
-                                                x_recon, x)*x.data.shape[1]
+                                                x_recon.permute(1, 0, 2, 3, 4), x.permute(1, 0, 2, 3, 4))*x.data.shape[1]  # put batch first
         
         gen_loss = torch.mean(log_d_posterior)-torch.mean(recon_likelihood)
         
@@ -433,12 +423,13 @@ for name, param in model.named_parameters():
     else:
         assert False  # no params should remain
 
-img_dis_optimizer = torch.optim.Adam(img_dis_params, lr=1e-3)
-img_gen_optimizer = torch.optim.Adam(img_gen_params, lr=1e-3)
-seq_dis_optimizer = torch.optim.Adam(seq_dis_params, lr=1e-3)
-seq_gen_optimizer = torch.optim.Adam(seq_gen_params, lr=1e-3)
-dis_optimizer = torch.optim.Adam(dis_params, lr=1e-3)
-gen_optimizer = torch.optim.Adam(gen_params, lr=1e-3)
+lr = 1e-3
+img_dis_optimizer = torch.optim.Adam(img_dis_params, lr=lr)
+img_gen_optimizer = torch.optim.Adam(img_gen_params, lr=lr)
+seq_dis_optimizer = torch.optim.Adam(seq_dis_params, lr=lr)
+seq_gen_optimizer = torch.optim.Adam(seq_gen_params, lr=lr)
+dis_optimizer = torch.optim.Adam(dis_params, lr=lr)
+gen_optimizer = torch.optim.Adam(gen_params, lr=lr)
 
 epochs = 1
 global_step = 0
@@ -484,8 +475,8 @@ with experiment.train():
             gen_loss.backward(retain_graph=True)
             gen_optimizer.step()
             
-            print("(Epoch {}) (Global Step {}) (Img Dis Loss {}) (Img Gen Loss {}) (Seq Dis Loss {}) (Seq Gen Loss {}) (Dis Loss {}) (Gen Loss {})".format(
-                epoch, global_step, img_dis_loss.item(), img_gen_loss.item(), seq_dis_loss.item(), seq_gen_loss.item(), dis_loss.item(), gen_loss.item()), end='\r', flush=True)
+            print("(Global Step {}) (Epoch {}) (Step {}) (Img Dis Loss {}) (Img Gen Loss {}) (Seq Dis Loss {}) (Seq Gen Loss {}) (Dis Loss {}) (Gen Loss {})".format(
+                global_step, epoch, i, img_dis_loss.item(), img_gen_loss.item(), seq_dis_loss.item(), seq_gen_loss.item(), dis_loss.item(), gen_loss.item()), end='\r', flush=True)
             
             experiment.log_metric("img_dis_loss", img_dis_loss.item(), step=global_step)
             experiment.log_metric("img_gen_loss", img_gen_loss.item(), step=global_step)
@@ -496,7 +487,6 @@ with experiment.train():
             
             if i % checkpoint_interval == 0:
                 checkpoint()
-            
             global_step += 1
         print("Epoch {} done!".format(epoch))
     checkpoint()  # final checkpoint
