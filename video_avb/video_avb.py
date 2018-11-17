@@ -1,3 +1,4 @@
+from comet_ml import Experiment
 import os
 import glob
 import sys
@@ -14,13 +15,12 @@ from torch import optim
 from torch import nn
 from torch.backends import cudnn
 import skimage.io
-from comet_ml import Experiment
 
-# experiment = Experiment(api_key="E3oWJUSFulpXpCUQfc5oGz0zY", project_name="obama_avb")
+experiment = Experiment(api_key="E3oWJUSFulpXpCUQfc5oGz0zY", project_name="obama_avb")
 
 cudnn.benchmark = True
-device = torch.device("cuda:2")
-torch.cuda.set_device(2)
+device = torch.device("cuda:3")
+torch.cuda.set_device(3)
 
 img_size = 256
 channels = 3
@@ -44,15 +44,15 @@ class VideoDataset(Dataset):
             images = list(map(transforms.ToTensor(), images))
         return torch.stack(images)
 
-dataset = VideoDataset("/home/santiago/Downloads/obama/images/", 20, transform=transforms.Compose([
+dataset = VideoDataset("/media/bighdd7/santiago/data/obama/images/", seq_len, transform=transforms.Compose([
     transforms.ToPILImage(),
     transforms.CenterCrop(1024),
     transforms.Resize(img_size),
     transforms.ToTensor()
 ]))
 
-batch_size = 4
-workers = 4
+batch_size = 2
+workers = 8
 dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=workers)
 
 class ImageAVB(nn.Module):
@@ -408,7 +408,7 @@ class VideoAVB(nn.Module):
         
         return img_dis_loss, img_gen_loss, seq_dis_loss, seq_gen_loss, dis_loss, gen_loss
 
-model = VideoAVB(256, 3, 64, 20, 64).cuda()
+model = VideoAVB(img_size, channels, img_latent_dim, seq_len, seq_latent_dim).cuda()
 print(model)
 
 img_dis_params = []
@@ -431,7 +431,7 @@ for name, param in model.named_parameters():
     elif 'seq_model' in name:
         seq_gen_params.append(param)
     else:
-        assert False  # all params should be covered
+        assert False  # no params should remain
 
 img_dis_optimizer = torch.optim.Adam(img_dis_params, lr=1e-3)
 img_gen_optimizer = torch.optim.Adam(img_gen_params, lr=1e-3)
@@ -444,41 +444,61 @@ epochs = 1
 global_step = 0
 checkpoint_interval = 100
 
-for epoch in range(epochs):
-    for i, data in enumerate(dataloader):
-        inputs = Variable(data.permute(1, 0, 2, 3, 4), requires_grad=False).cuda()  # (t, b, c, h, w)
-        img_dis_loss, img_gen_loss, seq_dis_loss, seq_gen_loss, dis_loss, gen_loss = model.forward(inputs)
-        
-        img_dis_optimizer.zero_grad()
-        img_dis_loss.backward(retain_graph=True)
-        img_dis_optimizer.step()
-        
-        img_gen_optimizer.zero_grad()
-        img_gen_loss.backward(retain_graph=True)
-        img_gen_optimizer.step()
-        
-        seq_dis_optimizer.zero_grad()
-        seq_dis_loss.backward(retain_graph=True)
-        seq_dis_optimizer.step()
-        
-        seq_gen_optimizer.zero_grad()
-        seq_gen_loss.backward(retain_graph=True)
-        seq_gen_optimizer.step()
-        
-        dis_optimizer.zero_grad()
-        dis_loss.backward(retain_graph=True)
-        dis_optimizer.step()
-        
-        gen_optimizer.zero_grad()
-        gen_loss.backward(retain_graph=True)
-        gen_optimizer.step()
-        
-#         experiment.log_metric("loss", loss.item(), step=global_step)
-        print("(Epoch {}) (Global Step {}) (Img Dis Loss {}) (Img Gen Loss {}) (Seq Dis Loss {}) (Seq Gen Loss {}) (Dis Loss {})".format(
-            epoch, global_step, img_dis_loss.item(), img_gen_loss.item(), seq_dis_loss.item(), seq_gen_loss.item(), dis_loss.item()), end='\r', flush=True)
-#         if i % checkpoint_interval == 0:
-#             torch.save(model.state_dict(), "../experiments/obama_avb/checkpoints/model_{}.pth".format(global_step))
-#             torch.save(optimizer.state_dict(), "../experiments/obama_avb/checkpoints/optimizer_{}.pth".format(global_step))
-        global_step += 1
-    print("Epoch {} done!".format(epoch))
+def checkpoint():
+    torch.save(model.state_dict(), "/media/bighdd7/santiago/experiments/obama_avb/checkpoints/model_{}.pth".format(global_step))
+    torch.save(img_dis_optimizer.state_dict(), "/media/bighdd7/santiago/experiments/obama_avb/checkpoints/img_dis_opt_{}.pth".format(global_step))
+    torch.save(img_gen_optimizer.state_dict(), "/media/bighdd7/santiago/experiments/obama_avb/checkpoints/img_gen_opt_{}.pth".format(global_step))
+    torch.save(seq_dis_optimizer.state_dict(), "/media/bighdd7/santiago/experiments/obama_avb/checkpoints/seq_dis_opt_{}.pth".format(global_step))
+    torch.save(seq_gen_optimizer.state_dict(), "/media/bighdd7/santiago/experiments/obama_avb/checkpoints/seq_gen_opt_{}.pth".format(global_step))
+    torch.save(dis_optimizer.state_dict(), "/media/bighdd7/santiago/experiments/obama_avb/checkpoints/dis_opt_{}.pth".format(global_step))
+    torch.save(gen_optimizer.state_dict(), "/media/bighdd7/santiago/experiments/obama_avb/checkpoints/gen_opt_{}.pth".format(global_step))
+
+with experiment.train():
+    for epoch in range(epochs):
+        model.train()
+        for i, data in enumerate(dataloader):
+            inputs = Variable(data.permute(1, 0, 2, 3, 4), requires_grad=False).cuda()  # (t, b, c, h, w)
+            img_dis_loss, img_gen_loss, seq_dis_loss, seq_gen_loss, dis_loss, gen_loss = model.forward(inputs)
+            
+            img_dis_optimizer.zero_grad()
+            img_dis_loss.backward(retain_graph=True)
+            img_dis_optimizer.step()
+            
+            img_gen_optimizer.zero_grad()
+            img_gen_loss.backward(retain_graph=True)
+            img_gen_optimizer.step()
+            
+            seq_dis_optimizer.zero_grad()
+            seq_dis_loss.backward(retain_graph=True)
+            seq_dis_optimizer.step()
+            
+            seq_gen_optimizer.zero_grad()
+            seq_gen_loss.backward(retain_graph=True)
+            seq_gen_optimizer.step()
+            
+            dis_optimizer.zero_grad()
+            dis_loss.backward(retain_graph=True)
+            dis_optimizer.step()
+            
+            gen_optimizer.zero_grad()
+            gen_loss.backward(retain_graph=True)
+            gen_optimizer.step()
+            
+            print("(Epoch {}) (Global Step {}) (Img Dis Loss {}) (Img Gen Loss {}) (Seq Dis Loss {}) (Seq Gen Loss {}) (Dis Loss {}) (Gen Loss {})".format(
+                epoch, global_step, img_dis_loss.item(), img_gen_loss.item(), seq_dis_loss.item(), seq_gen_loss.item(), dis_loss.item(), gen_loss.item()), end='\r', flush=True)
+            
+            experiment.log_metric("img_dis_loss", img_dis_loss.item(), step=global_step)
+            experiment.log_metric("img_gen_loss", img_gen_loss.item(), step=global_step)
+            experiment.log_metric("seq_dis_loss", seq_dis_loss.item(), step=global_step)
+            experiment.log_metric("seq_gen_loss", seq_gen_loss.item(), step=global_step)
+            experiment.log_metric("dis_loss", dis_loss.item(), step=global_step)
+            experiment.log_metric("gen_loss", gen_loss.item(), step=global_step)
+            
+            if i % checkpoint_interval == 0:
+                checkpoint()
+            
+            global_step += 1
+        print("Epoch {} done!".format(epoch))
+    checkpoint()  # final checkpoint
+    print("Training complete!")
 
